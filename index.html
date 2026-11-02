@@ -83,7 +83,7 @@ function log(a,d){db.logs.unshift({id:uid('L'),at:new Date().toISOString(),by:me
 function notify(to,t){db.notes.unshift({id:uid('N'),to,t,at:new Date().toISOString(),read:false})}
 /* ---------- permissions (enforced in every action, not only in the menu) ---------- */
 const can={admin:()=>me.role==='admin',money:()=>me.role==='admin',staff:()=>me.role!=='instructor',
- cls:c=>me.role!=='instructor'||c.instructor===me.id};
+ cls:c=>me.role!=='instructor'||c.instructor===me.id,teach:c=>me.role==='admin'||c.instructor===me.id};
 function guard(ok){if(!ok){toast('You don’t have permission for that.');return false}return true}
 /* ---------- finance: only recorded payments count as money received ---------- */
 const pays=e=>db.pays.filter(p=>p.enr===e.id);
@@ -174,20 +174,21 @@ function dash(v){if(me.role==='instructor')return idash(v);
  ${rows.every(r=>!r[ds.m])?'<div class="empty">No data for this period yet.</div>':rows.map(r=>`<div class="bar" onclick="go('courses')" title="${esc(r.c.name)}: ${r.enr} enrolled, ${r.lead} leads, ${money(r.rev)} collected"><span>${esc(r.c.name)}</span><span class="trk"><i style="width:${r[ds.m]/mx*100}%"></i></span><span>${fm(r[ds.m])}</span></div>`).join('')}</div>
  <div class="card"><h2>Needs attention</h2>${hold.length?hold.map(c=>`<div style="margin-bottom:6px">${badge('On Hold')} ${esc(c.name)}</div>`).join(''):'<div class="sub">No classes on hold.</div>'}<h2 style="margin-top:14px">Overdue accounts</h2>${odl.length?odl.map(x=>`<div style="display:flex;justify-content:space-between;margin-bottom:6px"><span>${esc(sname(stu(x.e.stu)))}</span><b style="color:var(--bd)">${money(x.f.od)}</b></div>`).join(''):'<div class="sub">Nothing overdue.</div>'}</div></div>
  <div class="grid two" style="margin-top:14px"><div class="card"><h2>Upcoming sessions</h2>${table(['Class','Starts','Instructor'],db.classes.filter(c=>c.start>=today()&&c.status!=='Cancelled').sort((a,b)=>a.start>b.start?1:-1).slice(0,5).map(c=>[esc(c.name),fd(c.start),esc(usr(c.instructor)?.name)]),'No upcoming classes.')}</div>
- <div class="card"><h2>Recent activity</h2>${db.logs.slice(0,6).map(l=>`<div style="margin-bottom:6px"><b>${esc(l.a)}</b> <span class="sub">${esc(l.d)} · ${esc(l.by)}</span></div>`).join('')||'<div class="empty">No activity yet.</div>'}</div></div>`}
+ <div class="card"><h2>Recent activity</h2>${db.logs.slice(0,6).map(l=>`<div style="margin-bottom:6px"><b>${esc(l.a)}</b> <span class="sub">${esc(l.d)} · ${esc(l.by)}</span></div>`).join('')||'<div class="empty">No activity yet.</div>'}</div></div>`+myTeach()}
+function myTeach(){const m=db.classes.filter(c=>c.instructor===me.id);return m.length?`<div class="card" style="margin-top:14px"><h2>Classes I’m teaching</h2>${classTable(m)}</div>`:''}
 function idash(v){const mine=db.classes.filter(c=>c.instructor===me.id),ids=new Set(db.enrs.filter(e=>mine.some(c=>c.id===e.cls)).map(e=>e.stu));
  v.innerHTML=head('Welcome, '+esc(me.name.split(' ')[0]),'You see only the classes assigned to you.')+cards([['My classes',mine.length],['Active',mine.filter(c=>c.status==='Ongoing').length],['Upcoming',mine.filter(c=>c.status==='Scheduled').length],['Completed',mine.filter(c=>c.status==='Completed').length],['My students',ids.size]])+`<div class="card"><h2>My classes</h2>${classTable(mine)}</div>`}
 /* ---------- classes ---------- */
-function classTable(list){return table(['Class','Course','Students','Start','End','Status','Link','Actions'],list.map(c=>[`<b>${esc(c.name)}</b>`,esc(crs(c.course)?.name),db.enrs.filter(e=>e.cls===c.id).length,fd(c.start),fd(c.end),badge(c.status),c.link?`<a href="${esc(c.link)}" target="_blank" rel="noopener">Join class</a>`:'—',`<button class="btn s g" onclick="clsView('${c.id}')">Open</button> <button class="btn s" onclick="setStatus('${c.id}')">Update status</button>`]),'No classes yet.')}
-function classes(v){const l=db.classes.filter(can.cls);
- v.innerHTML=head('Classes & Training',me.role==='instructor'?'Your assigned classes.':'Schedule cohorts, assign instructors and track status.',can.admin()?'<button class="btn" onclick="newClass()">New class</button>':'')+`<div class="card">${classTable(l)}</div>`}
-function newClass(){if(!guard(can.admin()))return;const ins=db.users.filter(u=>u.role==='instructor');
+function classTable(list){return table(['Class','Course','Students','Start','End','Status','Link','Actions'],list.map(c=>[`<b>${esc(c.name)}</b>`,esc(crs(c.course)?.name),db.enrs.filter(e=>e.cls===c.id).length,fd(c.start),fd(c.end),badge(c.status),c.link?`<a href="${esc(c.link)}" target="_blank" rel="noopener">Join class</a>`:'—',`<button class="btn s g" onclick="clsView('${c.id}')">Open</button> ${can.teach(c)?`<button class="btn s" onclick="setStatus('${c.id}')">Update status</button>`:''}`]),'No classes yet.')}
+function classes(v){const l=db.classes.filter(can.cls).filter(c=>!flt.mine||c.instructor===me.id);
+ v.innerHTML=head('Classes & Training',me.role==='instructor'?'Your assigned classes.':'Schedule cohorts, assign instructors and track status.',(me.role!=='instructor'?`<button class="btn g" onclick="flt.mine=!flt.mine;render()">${flt.mine?'Show all classes':'Show only my classes'}</button> `:'')+(can.admin()?'<button class="btn" onclick="newClass()">New class</button>':''))+`<div class="card">${classTable(l)}</div>`}
+function newClass(){if(!guard(can.admin()))return;const ins=db.users.filter(u=>!u.disabled);
  modal('New class',[{k:'name',l:'Class name',req:1},{k:'course',l:'Course',t:'select',o:db.courses.filter(c=>c.status==='Active').map(c=>[c.id,c.name])},{k:'instructor',l:'Instructor',t:'select',o:ins.map(u=>[u.id,u.name])},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
   if(!ins.length)return'Add an instructor first.';if(d.end<d.start)return'End date must be after the start date.';
   const clash=db.classes.find(c=>c.instructor===d.instructor&&['Scheduled','Ongoing'].includes(c.status)&&d.start<=c.end&&d.end>=c.start);
   if(clash)return'That instructor already teaches “'+clash.name+'” in these dates.';
   const c={id:uid('CL'),...d,status:'Scheduled',notes:'',hist:[]};db.classes.push(c);log('Class created',c.name);notify(c.instructor,'You were assigned to '+c.name);toast('Class created')})}
-function setStatus(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.cls(c)))return;
+function setStatus(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.teach(c)))return;
  modal('Update status: '+c.name,[{k:'st',l:'New status',t:'select',o:['Scheduled','Ongoing','On Hold','Completed']},{k:'why',l:'Reason (optional)',t:'area'}],d=>{
   if(d.st===c.status)return'Pick a different status.';
   if(['On Hold','Completed'].includes(d.st)&&!confirm('Change “'+c.name+'” to '+d.st+'?'))return'Cancelled.';
@@ -248,7 +249,7 @@ const AS=[['P','Present'],['L','Late'],['A','Absent'],['E','Excused']];
 function attStats(c,es){const att=c.att||{},dates=Object.keys(att).sort();
  return es.map(e=>{const s=stu(e.stu),r=dates.map(d=>att[d][e.stu]).filter(Boolean),n=k=>r.filter(x=>x===k).length,got=n('P')+n('L');
   return{s,sessions:r.length,P:n('P'),L:n('L'),A:n('A'),E:n('E'),pct:r.length?Math.round(got/r.length*100):null}})}
-function attCard(c,es){const att=c.att||{},dates=Object.keys(att).sort().reverse(),edit=me.role!=='staff'&&can.cls(c)&&c.status!=='Cancelled',
+function attCard(c,es){const att=c.att||{},dates=Object.keys(att).sort().reverse(),edit=can.teach(c)&&c.status!=='Cancelled',
  maxD=c.end<today()?c.end:today(),d=flt.ad&&flt.ad>=c.start&&flt.ad<=maxD?flt.ad:maxD,cur=att[d]||{},ids=[...new Set(es.map(e=>e.stu))],st=attStats(c,[...new Map(es.map(e=>[e.stu,e])).values()]);
  const low=st.filter(x=>x.pct!==null&&x.pct<70&&x.sessions>=3);
  return`<div class="card" style="margin-top:14px"><div class="top"><h2>Attendance</h2>${can.staff()&&dates.length?`<button class="btn g s" onclick="expAtt('${c.id}')">Export CSV</button>`:''}</div>
@@ -259,7 +260,7 @@ function attCard(c,es){const att=c.att||{},dates=Object.keys(att).sort().reverse
  <button class="btn" style="margin-top:10px" onclick="saveAtt('${c.id}')">Save attendance</button>`:'<div class="empty">Add students to this class before recording attendance.</div>'):'<div class="sub">Only the assigned instructor or an administrator can record attendance.</div>'}
  <h2 style="margin-top:18px">Summary</h2>${table(['Student','Sessions','Present','Late','Absent','Excused','Attendance'],st.map(x=>[esc(sname(x.s)),x.sessions,x.P,x.L,x.A,x.E,x.pct===null?'—':x.pct+'%']),'No students yet.')}
  ${dates.length?`<h2 style="margin-top:18px">Recorded sessions</h2><div>${dates.map(x=>`<span class="b" style="margin:0 6px 6px 0">${fd(x)}</span>`).join('')}</div>`:''}</div>`}
-function saveAtt(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&me.role!=='staff'&&can.cls(c)))return;
+function saveAtt(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.teach(c)))return;
  const d=$('#ad').value,maxD=c.end<today()?c.end:today();
  if(!d)return toast('Pick a session date.');if(d<c.start||d>maxD)return toast('Date must be between the class start and today (or the class end).');
  if(c.status==='Cancelled')return toast('This class is cancelled.');
@@ -269,7 +270,7 @@ function saveAtt(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&me.role!
  log(was?'Attendance updated':'Attendance recorded',c.name+' · '+fd(d));save();toast('Attendance saved');clsView(id)}
 function expAtt(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.staff()))return;const att=c.att||{},dates=Object.keys(att).sort(),ids=[...new Set(db.enrs.filter(e=>e.cls===id).map(e=>e.stu))];
  csv('attendance-'+c.name.replace(/\W+/g,'-')+'.csv',['Student',...dates],ids.map(sid=>[sname(stu(sid)),...dates.map(d=>({P:'Present',L:'Late',A:'Absent',E:'Excused'}[att[d][sid]]||''))]))}
-function saveNote(id){const c=db.classes.find(x=>x.id===id);if(!guard(can.cls(c)))return;c.notes=$('#cn').value;log('Class notes',c.name);save();toast('Notes saved')}
+function saveNote(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.teach(c)))return;c.notes=$('#cn').value;log('Class notes',c.name);save();toast('Notes saved')}
 /* ---------- students ---------- */
 function students(v){const q=(flt.q||'').toLowerCase();
  const rows=db.students.filter(s=>!s.archived===!flt.arch||false).filter(s=>{const es=db.enrs.filter(e=>e.stu===s.id);return(!flt.c||es.some(e=>e.course===flt.c))&&(!q||(sname(s)+s.email+s.id).toLowerCase().includes(q))});
