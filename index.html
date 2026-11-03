@@ -66,6 +66,9 @@ async function loadAll(){
 let busy=Promise.resolve();
 function save(){busy=busy.then(sync).catch(e=>{toast('Couldn’t save: '+(e.message||e));return loadAll().then(render)})}
 async function sync(){if(!sb||!me||!db)return;
+ for(const c of ['students','enrs','classes','leads','courses']){const gone=Object.keys(snap[c]||{}).filter(id=>!db[c].some(o=>o.id===id));
+  for(const id of gone){const r=await sb.from(c).delete().eq('id',id).select('id');if(r.error)throw r.error;if(!r.data.length)throw new Error('You don’t have permission to delete that record.');
+   if(c==='enrs')await sb.from('fees').delete().eq('id',id);delete snap[c][id]}}
  for(const c of COLLS){const s=snap[c];for(const o of db[c]){const j=JSON.stringify(o);if(s[o.id]===j)continue;const isNew=!(o.id in s),row=rowOf(c,o);
   const r=isNew?await sb.from(c).insert(row):await sb.from(c).update(row).eq('id',o.id).select('id');
   if(r.error)throw r.error;if(!isNew&&!r.data.length)throw new Error('You don’t have permission to change that record.');
@@ -195,7 +198,7 @@ function setStatus(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.te
   c.hist.unshift({from:c.status,to:d.st,by:me.name,at:new Date().toISOString(),why:d.why});log('Class status',c.name+': '+c.status+' → '+d.st);
   if(['On Hold','Completed'].includes(d.st))notify('admin',c.name+' is now '+d.st+' ('+me.name+')');c.status=d.st;toast('Status updated')},{st:c.status})}
 function clsView(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.cls(c)))return;const es=db.enrs.filter(e=>e.cls===id);
- $('#v').innerHTML=head(esc(c.name),esc(crs(c.course)?.name)+' · '+badge(c.status).replace(/<[^>]+>/g,'')+' · '+fd(c.start)+' to '+fd(c.end),`<button class="btn g" onclick="render()">Back</button>`)+`<div class="grid two"><div class="card"><h2>Roster</h2>${table(['Student','Email','Phone',...(can.money()?['Balance']:[])],es.map(e=>{const s=stu(e.stu);return[esc(sname(s)),esc(s.email),esc(s.phone),...(can.money()?[money(bal(e))]:[])]}),'No students assigned to this class yet.')}</div>
+ $('#v').innerHTML=head(esc(c.name),esc(crs(c.course)?.name)+' · '+badge(c.status).replace(/<[^>]+>/g,'')+' · '+fd(c.start)+' to '+fd(c.end),`<button class="btn g" onclick="render()">Back</button>${can.admin()?` <button class="btn g" onclick="editClass('${c.id}')">Edit class</button> <button class="btn g" onclick="delClass('${c.id}')">Delete class</button>`:''}`)+`<div class="grid two"><div class="card"><h2>Roster</h2>${table(['Student','Email','Phone',...(can.money()?['Balance']:[]),...(can.staff()?['']:[])],es.map(e=>{const s=stu(e.stu);return[esc(sname(s)),esc(s.email),esc(s.phone),...(can.money()?[money(bal(e))]:[]),...(can.staff()?[`<button class="btn s g" onclick="chClass('${e.id}')">Move</button> <button class="btn s g" onclick="unassign('${e.id}')">Remove</button>`]:[])]}),'No students assigned to this class yet.')+(can.staff()?`<button class="btn s" style="margin-top:10px" onclick="addToClass('${c.id}')">Add student</button>`:'')}</div>
  <div class="card"><h2>Status history</h2>${c.hist.length?c.hist.map(h=>`<div style="margin-bottom:8px"><b>${esc(h.from)} → ${esc(h.to)}</b><div class="sub">${esc(h.by)} · ${new Date(h.at).toLocaleString('en-GB')}${h.why?'<br>'+esc(h.why):''}</div></div>`).join(''):'<div class="empty">No status changes yet.</div>'}
  <h2 style="margin-top:14px">Class notes</h2><textarea id="cn" rows="3" style="width:100%">${esc(c.notes)}</textarea><button class="btn s" style="margin-top:6px" onclick="saveNote('${c.id}')">Save notes</button></div></div>`+attCard(c,es)}
 
@@ -244,6 +247,39 @@ function fixAtt(uid_,d){if(!guard(can.admin()))return;const r=SA.find(x=>x.user_
   {i:r&&r.in_at?hm(r.in_at):'',o:r&&r.out_at?hm(r.out_at):'',why:''})}
 function expClock(){if(!guard(can.admin()))return;const from=new Date(Date.now()-30*864e5).toLocaleDateString('en-CA',{timeZone:CFG.tz});
  csv('staff-attendance.csv',['Name','Date','In','Out','Hours','Status','Note'],SA.filter(r=>r.day>=from&&r.in_at).map(r=>[usr(r.user_id)?.name,r.day,hm(r.in_at),hm(r.out_at),hrs(r)===null?'':hrs(r).toFixed(2),sstat(r,r.day)[0],r.note||'']))}
+
+/* ---------- manage records: move, remove, edit, delete (money records are never deleted) ---------- */
+const cname=id=>{const c=db.classes.find(x=>x.id===id);return c?c.name:'no class'};
+function chClass(eid){if(!guard(can.staff()))return;const e=db.enrs.find(x=>x.id===eid),opts=db.classes.filter(c=>c.course===e.course&&c.status!=='Cancelled'&&c.id!==e.cls);
+ if(!opts.length)return toast('No other class is open for this course. Create one first.');
+ modal((e.cls?'Move ':'Assign ')+sname(stu(e.stu)),[{k:'to',l:'Class',t:'select',o:opts.map(c=>[c.id,c.name+' · '+fd(c.start)+' to '+fd(c.end)])}],d=>{
+  const from=e.cls,to=db.classes.find(c=>c.id===d.to);e.cls=d.to;log('Student moved',sname(stu(e.stu))+': '+cname(from)+' → '+to.name);
+  notify(to.instructor,sname(stu(e.stu))+' joined '+to.name);const f=db.classes.find(c=>c.id===from);if(f)notify(f.instructor,sname(stu(e.stu))+' moved out of '+f.name);toast('Class updated')})}
+function unassign(eid){if(!guard(can.staff()))return;const e=db.enrs.find(x=>x.id===eid);if(!e||!e.cls)return;const f=db.classes.find(c=>c.id===e.cls);
+ if(!confirm('Remove '+sname(stu(e.stu))+' from '+cname(e.cls)+'? Their enrolment and payments stay on record.'))return;
+ e.cls='';log('Removed from class',sname(stu(e.stu))+' ← '+cname(f&&f.id));if(f)notify(f.instructor,sname(stu(e.stu))+' was removed from '+f.name);save();toast('Removed from class');render()}
+function addToClass(cid){if(!guard(can.staff()))return;const c=db.classes.find(x=>x.id===cid),pool=db.enrs.filter(e=>e.course===c.course&&!e.cls);
+ if(!pool.length)return toast('No unassigned students are enrolled in this course. Enrol a student first.');
+ modal('Add student to '+c.name,[{k:'e',l:'Student',t:'select',o:pool.map(e=>[e.id,sname(stu(e.stu))])}],d=>{const e=db.enrs.find(x=>x.id===d.e);e.cls=cid;log('Student assigned',sname(stu(e.stu))+' → '+c.name);notify(c.instructor,sname(stu(e.stu))+' joined '+c.name);toast('Student added')})}
+function cancelEnr(eid){if(!guard(can.admin()))return;const e=db.enrs.find(x=>x.id===eid);if(!e)return;
+ if(db.pays.some(p=>p.enr===eid))return toast('This enrolment has payment records, so it can’t be deleted. Remove the student from the class instead, or record a refund.');
+ if(!confirm('Permanently cancel '+sname(stu(e.stu))+'’s enrolment in '+(crs(e.course)?.name||'this course')+'? This can’t be undone.'))return;
+ db.enrs=db.enrs.filter(x=>x.id!==eid);log('Enrolment cancelled',sname(stu(e.stu))+' · '+(crs(e.course)?.name||''));save();toast('Enrolment cancelled');render()}
+function delStu(id){if(!guard(can.admin()))return;const s=stu(id);if(!s)return;
+ if(db.enrs.some(e=>e.stu===id))return toast('This student still has enrolments. Cancel them first (enrolments with payments can’t be deleted, so archive the student instead).');
+ if(!confirm('Permanently delete '+sname(s)+'? This can’t be undone. Archive keeps the record instead.'))return;
+ db.students=db.students.filter(x=>x.id!==id);log('Student deleted',sname(s));save();toast('Student deleted');render()}
+function delClass(id){if(!guard(can.admin()))return;const c=db.classes.find(x=>x.id===id);if(!c)return;
+ if(db.enrs.some(e=>e.cls===id))return toast('This class still has students. Move or remove them first, or set the class to Cancelled instead.');
+ const n=Object.keys(c.att||{}).length;if(!confirm('Permanently delete “'+c.name+'”?'+(n?' Its '+n+' recorded attendance session(s) will be lost.':'')+' This can’t be undone.'))return;
+ db.classes=db.classes.filter(x=>x.id!==id);log('Class deleted',c.name);notify(c.instructor,c.name+' was deleted');save();toast('Class deleted');render()}
+function editClass(id){if(!guard(can.admin()))return;const c=db.classes.find(x=>x.id===id);if(!c)return;
+ modal('Edit class',[{k:'name',l:'Class name',req:1},{k:'instructor',l:'Instructor',t:'select',o:db.users.filter(u=>!u.disabled||u.id===c.instructor).map(u=>[u.id,u.name])},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
+  if(d.end<d.start)return'End date must be after the start date.';
+  const clash=db.classes.find(x=>x.id!==id&&x.instructor===d.instructor&&['Scheduled','Ongoing'].includes(x.status)&&d.start<=x.end&&d.end>=x.start);
+  if(clash)return'That instructor already teaches “'+clash.name+'” in these dates.';
+  const old=c.instructor;Object.assign(c,{name:d.name,instructor:d.instructor,start:d.start,end:d.end,fmt:d.fmt,link:d.link});
+  log('Class edited',c.name);if(old!==d.instructor){notify(d.instructor,'You were assigned to '+c.name);notify(old,'You were unassigned from '+c.name)}toast('Class updated')},c)}
 /* ---------- attendance (stored on the class; instructors mark their own classes, admins can mark any, staff view only) ---------- */
 const AS=[['P','Present'],['L','Late'],['A','Absent'],['E','Excused']];
 function attStats(c,es){const att=c.att||{},dates=Object.keys(att).sort();
@@ -277,7 +313,7 @@ function students(v){const q=(flt.q||'').toLowerCase();
  v.innerHTML=head('Students','Every student, their enrollments and balances.',`<button class="btn g" onclick="expStu()">Export CSV</button> <button class="btn" onclick="newStu()">Add student</button>`)+
  `<div class="tb"><input placeholder="Search name, email or ID" value="${esc(flt.q||'')}" oninput="flt.q=this.value;clearTimeout(window.t);window.t=setTimeout(()=>{students($('#v'));$('#v input').focus()},250)"><select onchange="flt.c=this.value;render()"><option value="">All courses</option>${db.courses.map(c=>`<option value="${c.id}" ${flt.c===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select><button class="btn g" onclick="flt.arch=!flt.arch;render()">${flt.arch?'Show active':'Show archived'}</button></div>
  <div class="card">${table(['ID','Name','Email','Mobile','Course(s)','Instructor','Training','Payment','Balance',''],rows.map(s=>{const es=db.enrs.filter(e=>e.stu===s.id),e=es[0],c=e&&db.classes.find(x=>x.id===e.cls);
-  return[s.id,`<b>${esc(sname(s))}</b>`,esc(s.email),esc(s.phone),esc(es.map(e=>crs(e.course)?.name).join(', ')||'—'),esc(usr(c?.instructor)?.name||'—'),c?badge(c.status):badge('Not Scheduled'),es.length?badge(fin(e).st):'—',money(es.reduce((a,e)=>a+bal(e),0)),`<button class="btn s g" onclick="stuView('${s.id}')">View</button> <button class="btn s g" onclick="arch('${s.id}')">${s.archived?'Restore':'Archive'}</button>`]}),'No students match. Try clearing filters or add a student.')}</div>`}
+  return[s.id,`<b>${esc(sname(s))}</b>`,esc(s.email),esc(s.phone),esc(es.map(e=>crs(e.course)?.name).join(', ')||'—'),esc(usr(c?.instructor)?.name||'—'),c?badge(c.status):badge('Not Scheduled'),es.length?badge(fin(e).st):'—',money(es.reduce((a,e)=>a+bal(e),0)),`<button class="btn s g" onclick="stuView('${s.id}')">View</button> <button class="btn s g" onclick="arch('${s.id}')">${s.archived?'Restore':'Archive'}</button>${can.admin()?` <button class="btn s g" onclick="delStu('${s.id}')">Delete</button>`:''}`]}),'No students match. Try clearing filters or add a student.')}</div>`}
 function expStu(){csv('students.csv',['ID','First','Last','Email','Phone','Courses','Balance'],db.students.map(s=>{const es=db.enrs.filter(e=>e.stu===s.id);return[s.id,s.first,s.last,s.email,s.phone,es.map(e=>crs(e.course)?.name).join('; '),es.reduce((a,e)=>a+bal(e),0)]}))}
 function newStu(){if(!guard(can.staff()))return;modal('Add student',[{k:'first',l:'First name',req:1},{k:'last',l:'Last name',req:1},{k:'email',l:'Email',t:'email',req:1},{k:'phone',l:'Mobile (with country code, e.g. +234…)',req:1},{k:'src',l:'Lead source'}],d=>{
   if(!/^\S+@\S+\.\S+$/.test(d.email))return'Enter a valid email.';if(!/^\+\d{7,15}$/.test(d.phone.replace(/\s/g,'')))return'Phone must start with + and a country code.';
@@ -293,7 +329,7 @@ function enrol(sid,lead){if(!guard(can.staff()))return;modal('Enrol in a course'
 function stuView(id){const s=stu(id),es=db.enrs.filter(e=>e.stu===id);
  $('#v').innerHTML=head(esc(sname(s)),s.id+' · '+esc(s.email)+' · '+esc(s.phone),`<button class="btn g" onclick="render()">Back</button> <button class="btn" onclick="enrol('${id}')">Enrol in course</button>`)+
  (es.length?es.map(e=>{const f=fin(e),c=db.classes.find(x=>x.id===e.cls);return`<div class="card" style="margin-bottom:12px"><div class="top"><h2>${esc(crs(e.course)?.name)}</h2>${badge(f.st)}</div><div class="sub">${c?esc(c.name)+' · '+esc(usr(c.instructor)?.name)+' · '+fd(c.start)+' to '+fd(c.end):'<span style="color:var(--wn)">Not assigned to a class yet</span>'} · Enrolled ${fd(e.date)} · ${esc(e.plan)}</div>
- ${cards([['Final amount',money(f.net)],['Paid',money(f.paid)],['Outstanding',money(f.bal)],['Overdue',money(f.od),f.od>0],['Next due',fd(f.next)],['Complete',f.pct+'%']])}${table(['#','Due','Amount'],e.inst.map(i=>[i.n,fd(i.due),money(i.amt)]),'')}${can.money()?`<button class="btn s" style="margin-top:8px" onclick="recPay('${e.id}')">Record payment</button>`:''}</div>`}).join(''):'<div class="card empty">No enrolments yet. Use “Enrol in course” to start.</div>')}
+ ${cards([['Final amount',money(f.net)],['Paid',money(f.paid)],['Outstanding',money(f.bal)],['Overdue',money(f.od),f.od>0],['Next due',fd(f.next)],['Complete',f.pct+'%']])}${table(['#','Due','Amount'],e.inst.map(i=>[i.n,fd(i.due),money(i.amt)]),'')}${can.money()?`<button class="btn s" style="margin-top:8px" onclick="recPay('${e.id}')">Record payment</button>`:''}${can.staff()?` <button class="btn s g" style="margin-top:8px" onclick="chClass('${e.id}')">${e.cls?'Change class':'Assign class'}</button>`:''}${can.staff()&&e.cls?` <button class="btn s g" style="margin-top:8px" onclick="unassign('${e.id}')">Remove from class</button>`:''}${can.admin()?` <button class="btn s g" style="margin-top:8px" onclick="cancelEnr('${e.id}')">Cancel enrolment</button>`:''}</div>`}).join(''):'<div class="card empty">No enrolments yet. Use “Enrol in course” to start.</div>')}
 /* ---------- leads ---------- */
 const LS=['New Lead','Contacted','Interested','Enrolled','Deferred','Withdrawn'];
 function leads(v){v.innerHTML=head('Leads & Prospects','Follow up and convert prospects into students.','<button class="btn" onclick="newLead()">Add lead</button>')+
