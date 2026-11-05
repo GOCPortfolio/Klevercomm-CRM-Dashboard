@@ -182,18 +182,18 @@ function myTeach(){const m=db.classes.filter(c=>c.instructor===me.id);return m.l
 function idash(v){const mine=db.classes.filter(c=>c.instructor===me.id),ids=new Set(db.enrs.filter(e=>mine.some(c=>c.id===e.cls)).map(e=>e.stu));
  v.innerHTML=head('Welcome, '+esc(me.name.split(' ')[0]),'You see only the classes assigned to you.')+cards([['My classes',mine.length],['Active',mine.filter(c=>c.status==='Ongoing').length],['Upcoming',mine.filter(c=>c.status==='Scheduled').length],['Completed',mine.filter(c=>c.status==='Completed').length],['My students',ids.size]])+`<div class="card"><h2>My classes</h2>${classTable(mine)}</div>`}
 /* ---------- classes ---------- */
-function classTable(list){return table(['Class','Course','Students','Start','End','Status','Link','Actions'],list.map(c=>[`<b>${esc(c.name)}</b>`,esc(crs(c.course)?.name),db.enrs.filter(e=>e.cls===c.id).length,fd(c.start),fd(c.end),badge(c.status),c.link?`<a href="${esc(c.link)}" target="_blank" rel="noopener">Join class</a>`:'—',`<button class="btn s g" onclick="clsView('${c.id}')">Open</button> ${can.teach(c)?`<button class="btn s" onclick="setStatus('${c.id}')">Update status</button>`:''}`]),'No classes yet.')}
+function classTable(list){return table(['Class','Course','Slot','Students','Start','End','Status','Link','Actions'],list.map(c=>[`<b>${esc(c.name)}</b>`,esc(crs(c.course)?.name),esc(c.slot||'Not set'),db.enrs.filter(e=>e.cls===c.id).length,fd(c.start),fd(c.end),badge(c.status),c.link?`<a href="${esc(c.link)}" target="_blank" rel="noopener">Join class</a>`:'—',`<button class="btn s g" onclick="clsView('${c.id}')">Open</button> ${can.teach(c)?`<button class="btn s" onclick="setStatus('${c.id}')">Update status</button>`:''}`]),'No classes yet.')}
 function classes(v){const l=db.classes.filter(can.cls).filter(c=>!flt.mine||c.instructor===me.id);
  v.innerHTML=head('Classes & Training',me.role==='instructor'?'Your assigned classes.':'Schedule cohorts, assign instructors and track status.',(me.role!=='instructor'?`<button class="btn g" onclick="flt.mine=!flt.mine;render()">${flt.mine?'Show all classes':'Show only my classes'}</button> `:'')+(can.admin()?'<button class="btn" onclick="newClass()">New class</button>':''))+`<div class="card">${classTable(l)}</div>`}
 function newClass(){if(!guard(can.admin()))return;const ins=db.users.filter(u=>!u.disabled);
- modal('New class',[{k:'name',l:'Class name',req:1},{k:'course',l:'Course',t:'select',o:db.courses.filter(c=>c.status==='Active').map(c=>[c.id,c.name])},{k:'instructor',l:'Instructor',t:'select',o:ins.map(u=>[u.id,u.name])},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
+ modal('New class',[{k:'name',l:'Class name',req:1},{k:'course',l:'Course',t:'select',o:db.courses.filter(c=>c.status==='Active').map(c=>[c.id,c.name])},{k:'instructor',l:'Instructor',t:'select',o:ins.map(u=>[u.id,u.name])},{k:'slot',l:'Time slot',t:'select',o:SLOTS},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
   if(!ins.length)return'Add an instructor first.';if(d.end<d.start)return'End date must be after the start date.';
-  const clash=db.classes.find(c=>c.instructor===d.instructor&&['Scheduled','Ongoing'].includes(c.status)&&d.start<=c.end&&d.end>=c.start);
-  if(clash)return'That instructor already teaches “'+clash.name+'” in these dates.';
+  const bad=slotClash(d.instructor,d.start,d.end,d.slot);if(bad)return bad;
   const c={id:uid('CL'),...d,status:'Scheduled',notes:'',hist:[]};db.classes.push(c);log('Class created',c.name);notify(c.instructor,'You were assigned to '+c.name);toast('Class created')})}
 function setStatus(id){const c=db.classes.find(x=>x.id===id);if(!guard(c&&can.teach(c)))return;
  modal('Update status: '+c.name,[{k:'st',l:'New status',t:'select',o:['Scheduled','Ongoing','On Hold','Completed']},{k:'why',l:'Reason (optional)',t:'area'}],d=>{
   if(d.st===c.status)return'Pick a different status.';
+  if(['Scheduled','Ongoing'].includes(d.st)&&!['Scheduled','Ongoing'].includes(c.status)){const bad=slotClash(c.instructor,c.start,c.end,c.slot||'',c.id);if(bad)return bad}
   if(['On Hold','Completed'].includes(d.st)&&!confirm('Change “'+c.name+'” to '+d.st+'?'))return'Cancelled.';
   c.hist.unshift({from:c.status,to:d.st,by:me.name,at:new Date().toISOString(),why:d.why});log('Class status',c.name+': '+c.status+' → '+d.st);
   if(['On Hold','Completed'].includes(d.st))notify('admin',c.name+' is now '+d.st+' ('+me.name+')');c.status=d.st;toast('Status updated')},{st:c.status})}
@@ -248,6 +248,11 @@ function fixAtt(uid_,d){if(!guard(can.admin()))return;const r=SA.find(x=>x.user_
 function expClock(){if(!guard(can.admin()))return;const from=new Date(Date.now()-30*864e5).toLocaleDateString('en-CA',{timeZone:CFG.tz});
  csv('staff-attendance.csv',['Name','Date','In','Out','Hours','Status','Note'],SA.filter(r=>r.day>=from&&r.in_at).map(r=>[usr(r.user_id)?.name,r.day,hm(r.in_at),hm(r.out_at),hrs(r)===null?'':hrs(r).toFixed(2),sstat(r,r.day)[0],r.note||'']))}
 
+/* ---------- instructor load: one class per time slot, at most 3 at the same time ---------- */
+const SLOTS=['Morning','Afternoon','Evening'];
+function slotClash(ins,start,end,slot,skip){const o=db.classes.filter(x=>x.id!==skip&&x.instructor===ins&&['Scheduled','Ongoing'].includes(x.status)&&start<=x.end&&end>=x.start),n=usr(ins)?.name||'That instructor';
+ const same=slot&&o.find(x=>x.slot===slot);if(same)return n+' already teaches “'+same.name+'” in the '+slot.toLowerCase()+' slot during these dates.';
+ if(o.length>=3)return n+' already has 3 classes during these dates, which is the maximum.';return''}
 /* ---------- manage records: move, remove, edit, delete (money records are never deleted) ---------- */
 const cname=id=>{const c=db.classes.find(x=>x.id===id);return c?c.name:'no class'};
 function chClass(eid){if(!guard(can.staff()))return;const e=db.enrs.find(x=>x.id===eid),opts=db.classes.filter(c=>c.course===e.course&&c.status!=='Cancelled'&&c.id!==e.cls);
@@ -274,11 +279,10 @@ function delClass(id){if(!guard(can.admin()))return;const c=db.classes.find(x=>x
  const n=Object.keys(c.att||{}).length;if(!confirm('Permanently delete “'+c.name+'”?'+(n?' Its '+n+' recorded attendance session(s) will be lost.':'')+' This can’t be undone.'))return;
  db.classes=db.classes.filter(x=>x.id!==id);log('Class deleted',c.name);notify(c.instructor,c.name+' was deleted');save();toast('Class deleted');render()}
 function editClass(id){if(!guard(can.admin()))return;const c=db.classes.find(x=>x.id===id);if(!c)return;
- modal('Edit class',[{k:'name',l:'Class name',req:1},{k:'instructor',l:'Instructor',t:'select',o:db.users.filter(u=>!u.disabled||u.id===c.instructor).map(u=>[u.id,u.name])},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
+ modal('Edit class',[{k:'name',l:'Class name',req:1},{k:'instructor',l:'Instructor',t:'select',o:db.users.filter(u=>!u.disabled||u.id===c.instructor).map(u=>[u.id,u.name])},{k:'slot',l:'Time slot',t:'select',o:SLOTS},{k:'start',l:'Start date',t:'date',req:1},{k:'end',l:'End date',t:'date',req:1},{k:'fmt',l:'Format',t:'select',o:['Online','In-Person','Hybrid']},{k:'link',l:'Meeting link'}],d=>{
   if(d.end<d.start)return'End date must be after the start date.';
-  const clash=db.classes.find(x=>x.id!==id&&x.instructor===d.instructor&&['Scheduled','Ongoing'].includes(x.status)&&d.start<=x.end&&d.end>=x.start);
-  if(clash)return'That instructor already teaches “'+clash.name+'” in these dates.';
-  const old=c.instructor;Object.assign(c,{name:d.name,instructor:d.instructor,start:d.start,end:d.end,fmt:d.fmt,link:d.link});
+  const bad=slotClash(d.instructor,d.start,d.end,d.slot,id);if(bad)return bad;
+  const old=c.instructor;Object.assign(c,{name:d.name,instructor:d.instructor,slot:d.slot,start:d.start,end:d.end,fmt:d.fmt,link:d.link});
   log('Class edited',c.name);if(old!==d.instructor){notify(d.instructor,'You were assigned to '+c.name);notify(old,'You were unassigned from '+c.name)}toast('Class updated')},c)}
 /* ---------- attendance (stored on the class; instructors mark their own classes, admins can mark any, staff view only) ---------- */
 const AS=[['P','Present'],['L','Late'],['A','Absent'],['E','Excused']];
